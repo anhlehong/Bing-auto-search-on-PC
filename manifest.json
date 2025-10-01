@@ -1,0 +1,28 @@
+{
+    "manifest_version": 3,
+    "name": "Bing Auto Search",
+    "version": "2.4",
+    "description": "Automatically searches random Wikipedia topics on Bing.com and opens rewards.bing.com when done.",
+    "permissions": [
+        "tabs",
+        "activeTab",
+        "scripting",
+        "alarms",
+        "storage",
+        "downloads"
+    ],
+    "host_permissions": [
+        "https://www.bing.com/*",
+        "https://en.wikipedia.org/*",
+        "https://rewards.bing.com/*"
+    ],
+    "action": {
+        "default_popup": "popup.html"
+    },
+    "icons": {
+        "128": "icon.png"
+    },
+    "background": {
+        "service_worker": "background.js"
+    }
+}
