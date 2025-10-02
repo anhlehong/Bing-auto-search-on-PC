@@ -265,10 +265,10 @@ function performPostSearchScrolling() {
       if (!scrollActive) return;
 
       // Random scroll duration between 3-6 seconds
-      const scrollDuration = Math.random() * 3000 + 3000; // 3000-6000ms (3-6 seconds)
+      const scrollDuration = Math.random() * 1000 + 1000; // 3000-6000ms (3-6 seconds)
       // Random scroll direction for this session (up or down)
       const sessionScrollDirection = Math.random() > 0.5 ? 1 : -1; // 1 = down, -1 = up
-      const scrollInterval = 100; // Scroll every 100ms
+      const scrollInterval = 110; // Scroll every 110ms
       const scrollSteps = Math.floor(scrollDuration / scrollInterval);
       let currentStep = 0;
 
