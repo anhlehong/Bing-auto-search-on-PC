@@ -744,6 +744,12 @@ async function restoreIntervalState() {
 // Receive messages from popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "startSearch") {
+    logger.info("Received startSearch message", {
+      mode: message.mode,
+      queriesCount: message.queries.length,
+      queries: message.queries.slice(0, 5), // Log first 5 queries for debugging
+    });
+
     queries = message.queries;
     mode = message.mode;
     searchIndex = 0;
@@ -752,6 +758,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     activeTabId = null;
     intervalCount = 0;
     searchStopped = false; // Reset stop flag when starting
+
+    // Log queries analysis
+    const failCount = queries.filter((q) => q === "fail").length;
+    const realTopicsCount = queries.length - failCount;
+    logger.info("Query analysis", {
+      totalQueries: queries.length,
+      realTopics: realTopicsCount,
+      fallbackTopics: failCount,
+      isUsingBackupTopics: failCount >= queries.length * 0.8,
+    });
 
     // Clear old alarms
     chrome.alarms.clearAll();

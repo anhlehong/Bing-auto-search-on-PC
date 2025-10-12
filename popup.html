@@ -1,24 +1,41 @@
 <!DOCTYPE html>
 <html>
-
-<head>
+  <head>
     <title>Bing Auto Search</title>
-    <link rel="stylesheet" href="popup.css">
-</head>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
 
-<body>
+  <body>
     <h1>Bing Auto Search</h1>
-    <input type="number" id="searchCount" placeholder="Enter number of searches (1-100)" min="1" max="100">
+    <input
+      type="number"
+      id="searchCount"
+      placeholder="Enter number of searches (1-100)"
+      min="1"
+      max="100"
+    />
     <button id="searchButton">Continuous Search</button>
-    <button id="searchIntervalButton">Interval Search (5 searches/15min)</button>
-    <button id="stopButton" style="background-color: #dc3545;">Stop All</button>
-    <button id="downloadLogsButton" style="background-color: #28a745;">Download Logs</button>
-    <div id="status" style="margin-top: 10px; font-size: 12px; color: #666;"></div>
-    <div id="help" style="margin-top: 10px; font-size: 10px; color: #999;">
-        Continuous: Search continuously with short delay<br>
-        Interval: After every 5 searches, wait 15 minutes
+    <button id="searchIntervalButton">
+      Interval Search (5 searches/15min)
+    </button>
+    <button id="stopButton" style="background-color: #dc3545">Stop All</button>
+    <button id="downloadLogsButton" style="background-color: #28a745">
+      Download Logs
+    </button>
+    <button
+      id="testAPIButton"
+      style="background-color: #17a2b8; margin-top: 5px"
+    >
+      Test Wikipedia API
+    </button>
+    <div
+      id="status"
+      style="margin-top: 10px; font-size: 12px; color: #666"
+    ></div>
+    <div id="help" style="margin-top: 10px; font-size: 10px; color: #999">
+      Continuous: Search continuously with short delay<br />
+      Interval: After every 5 searches, wait 15 minutes
     </div>
     <script src="popup.js"></script>
-</body>
-
+  </body>
 </html>
