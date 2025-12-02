@@ -1,8 +1,133 @@
 // Import logger
 importScripts("logger.js");
 
-console.log("background.js loaded");
-logger.info("Background script loaded successfully");
+// Basic keep-alive mechanism
+self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", () => self.clients.claim());
+
+// Register message listener EARLY to ensure it's ready when popup sends message
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === "startSearch") {
+    if (typeof logger !== "undefined") {
+      logger.info("Received startSearch message", {
+        mode: message.mode,
+        queriesCount: message.queries.length,
+      });
+    }
+
+    queries = message.queries;
+    mode = message.mode;
+    searchIndex = 0;
+    queryQueue = [];
+    isProcessing = false;
+    activeTabId = null;
+    intervalCount = 0;
+    searchStopped = false; // Reset stop flag when starting
+
+    // Clear old alarms
+    chrome.alarms.clearAll();
+
+    if (mode === "interval") {
+      intervalSearchActive = true;
+      console.log("Starting interval mode");
+      // Save interval state with complete information
+      if (chrome.storage && chrome.storage.local) {
+        chrome.storage.local
+          .set({
+            intervalMode: true,
+            currentQueries: queries,
+            currentIndex: 0,
+            intervalCount: 0,
+            intervalSearchActive: true,
+          })
+          .catch((err) => console.log("Cannot save to storage:", err));
+      }
+    } else {
+      intervalSearchActive = false;
+      // Clear interval state if possible
+      if (chrome.storage && chrome.storage.local) {
+        chrome.storage.local
+          .clear()
+          .catch((err) => console.log("Cannot clear storage:", err));
+      }
+    }
+
+    // Start search immediately
+    console.log("Starting first search cycle");
+    startSearch();
+    sendResponse({ status: "Search started" });
+  } else if (message.action === "stopInterval") {
+    // Stop interval - CLEAR ALL ALARMS AND RESET STATE
+    searchStopped = true; // Set global stop flag
+    intervalSearchActive = false;
+    isProcessing = false; // Stop any ongoing processing
+    queryQueue = []; // Clear the query queue
+    chrome.alarms.clearAll();
+    if (chrome.storage && chrome.storage.local) {
+      chrome.storage.local
+        .clear()
+        .catch((err) => console.log("Cannot clear storage:", err));
+    }
+    console.log("Stopped interval mode, cleared all alarms and reset state");
+    if (typeof logger !== "undefined") logger.info("Interval mode stopped");
+    sendResponse({ status: "Interval stopped" });
+  } else if (message.action === "stopAll") {
+    // Stop all searches - both continuous and interval
+    searchStopped = true; // Set global stop flag
+    intervalSearchActive = false;
+    isProcessing = false; // Stop any ongoing processing
+    queryQueue = []; // Clear the query queue
+    chrome.alarms.clearAll();
+
+    // Immediately stop scrolling on active tab if exists
+    if (activeTabId) {
+      try {
+        chrome.scripting.executeScript(
+          {
+            target: { tabId: activeTabId },
+            func: () => {
+              if (window.stopScrolling) {
+                window.stopScrolling();
+                console.log("All scrolling stopped immediately by stopAll");
+              }
+            },
+          },
+          () => {
+            // Ignore errors
+          }
+        );
+      } catch (error) {
+        console.log("Failed to stop scrolling:", error.message);
+      }
+    }
+
+    if (chrome.storage && chrome.storage.local) {
+      chrome.storage.local
+        .clear()
+        .catch((err) => console.log("Cannot clear storage:", err));
+    }
+    console.log("Stopped all searches");
+    if (typeof logger !== "undefined") logger.info("All searches stopped");
+    sendResponse({ status: "All searches stopped" });
+  } else if (message.action === "downloadLogs") {
+    // Download app.log file
+    if (typeof logger !== "undefined")
+      logger.info("Download logs request received");
+    downloadLogFile();
+    sendResponse({ status: "Logs download initiated" });
+  }
+  // Return true to indicate async response
+  return true;
+});
+
+try {
+  console.log("background.js initializing...");
+  if (typeof logger !== "undefined") {
+    logger.info("Background script initializing");
+  }
+} catch (e) {
+  console.error("Logging failed during initialization", e);
+}
 
 let queries = [];
 let searchIndex = 0;
@@ -17,7 +142,8 @@ let searchStopped = false; // Global flag to stop all searches
 // Function to create random delay
 function getRandomDelay(min, max) {
   const delay = Math.floor(Math.random() * (max - min + 1)) + min;
-  logger.debug(`Random delay generated: ${delay / 1000}s (${delay}ms)`);
+  if (typeof logger !== "undefined")
+    logger.debug(`Random delay generated: ${delay / 1000}s (${delay}ms)`);
   return delay;
 }
 
@@ -46,18 +172,23 @@ function createIntervalAlarm() {
         intervalCount: intervalCount,
         intervalSearchActive: true,
       })
-      .catch((err) => logger.error("Cannot save alarm info", err));
+      .catch((err) => {
+        if (typeof logger !== "undefined")
+          logger.error("Cannot save alarm info", err);
+      });
   }
 
-  logger.info(
-    `Created interval alarm with delay ${totalMinutes.toFixed(1)} minutes`,
-    {
-      alarmName,
-      delayMinutes: totalMinutes,
-      intervalCount,
-      searchIndex,
-    }
-  );
+  if (typeof logger !== "undefined") {
+    logger.info(
+      `Created interval alarm with delay ${totalMinutes.toFixed(1)} minutes`,
+      {
+        alarmName,
+        delayMinutes: totalMinutes,
+        intervalCount,
+        searchIndex,
+      }
+    );
+  }
 
   // Create backup alarm every 5 minutes instead of 1 minute to reduce spam
   chrome.alarms.create("backupCheck", {
@@ -98,28 +229,33 @@ function ensureAlarmExists() {
             !chrome.lastEnsureLog ||
             now - chrome.lastEnsureLog > 10 * 60 * 1000
           ) {
-            logger.info(
-              `Alarm status check - Elapsed: ${elapsedMinutes.toFixed(
-                1
-              )}min, Remaining: ${remainingMinutes.toFixed(1)}min`
-            );
+            if (typeof logger !== "undefined") {
+              logger.info(
+                `Alarm status check - Elapsed: ${elapsedMinutes.toFixed(
+                  1
+                )}min, Remaining: ${remainingMinutes.toFixed(1)}min`
+              );
+            }
             chrome.lastEnsureLog = now;
           }
 
           if (remainingMinutes <= 0) {
             // Time is up, trigger search immediately
-            logger.info(
-              "Interval time expired (backup check), triggering search immediately"
-            );
+            if (typeof logger !== "undefined")
+              logger.info(
+                "Interval time expired (backup check), triggering search immediately"
+              );
             chrome.alarms.clear("backupCheck"); // Stop backup check
             handleIntervalTrigger();
           } else {
             // Check if alarm still exists
             chrome.alarms.get(data.intervalAlarmName, (alarm) => {
               if (!alarm) {
-                logger.warn("Main alarm lost, recreating with remaining time", {
-                  remainingMinutes,
-                });
+                if (typeof logger !== "undefined")
+                  logger.warn(
+                    "Main alarm lost, recreating with remaining time",
+                    { remainingMinutes }
+                  );
                 chrome.alarms.create(data.intervalAlarmName, {
                   delayInMinutes: remainingMinutes,
                 });
@@ -128,16 +264,21 @@ function ensureAlarmExists() {
           }
         }
       })
-      .catch((err) => logger.error("Error checking alarm", err));
+      .catch((err) => {
+        if (typeof logger !== "undefined")
+          logger.error("Error checking alarm", err);
+      });
   }
 }
 
 // Function to handle interval trigger
 function handleIntervalTrigger() {
-  logger.info("Interval trigger activated - continuing search cycle", {
-    previousIntervalCount: intervalCount,
-    currentSearchIndex: searchIndex,
-  });
+  if (typeof logger !== "undefined") {
+    logger.info("Interval trigger activated - continuing search cycle", {
+      previousIntervalCount: intervalCount,
+      currentSearchIndex: searchIndex,
+    });
+  }
   intervalCount = 0; // Reset counter
 
   // DO NOT reset activeTabId - reuse current tab
@@ -149,48 +290,49 @@ function handleIntervalTrigger() {
 async function startSearch() {
   // Check if search is stopped globally
   if (searchStopped || (mode === "interval" && !intervalSearchActive)) {
-    logger.info("Search stopped, not starting search");
+    if (typeof logger !== "undefined")
+      logger.info("Search stopped, not starting search");
     console.log("Search stopped, not starting search");
     return;
   }
 
   if (isProcessing) {
-    logger.debug("Processing already in progress, skipping startSearch");
+    if (typeof logger !== "undefined")
+      logger.debug("Processing already in progress, skipping startSearch");
     return;
   }
 
   if (searchIndex >= queries.length && queryQueue.length === 0) {
-    logger.info("All searches completed, redirecting to rewards.bing.com", {
-      totalSearches: searchIndex,
-      mode: mode,
-    });
+    if (typeof logger !== "undefined") {
+      logger.info("All searches completed, redirecting to rewards.bing.com", {
+        totalSearches: searchIndex,
+        mode: mode,
+      });
+    }
     if (activeTabId) {
       chrome.tabs.update(activeTabId, { url: "https://rewards.bing.com" });
     }
 
-    // If interval mode, reset to continue
-    if (mode === "interval" && intervalSearchActive) {
-      logger.info(
-        "Interval mode: Completed all queries, resetting for next cycle"
-      );
-      searchIndex = 0;
-      intervalCount = 0;
-    }
+    // STOP HERE - Do not reset interval mode to loop forever
+    if (typeof logger !== "undefined")
+      logger.info(`Completed all ${queries.length} queries. Stopping.`);
     return;
   }
 
   if (searchIndex < queries.length) {
     queryQueue.push(queries[searchIndex]);
-    logger.info(
-      `Added query ${searchIndex + 1}/${queries.length} to queue: "${
-        queries[searchIndex]
-      }"`,
-      {
-        queryIndex: searchIndex + 1,
-        totalQueries: queries.length,
-        currentIntervalCount: intervalCount,
-      }
-    );
+    if (typeof logger !== "undefined") {
+      logger.info(
+        `Added query ${searchIndex + 1}/${queries.length} to queue: "${
+          queries[searchIndex]
+        }"`,
+        {
+          queryIndex: searchIndex + 1,
+          totalQueries: queries.length,
+          currentIntervalCount: intervalCount,
+        }
+      );
+    }
     searchIndex++;
     intervalCount++; // Increase counter for interval mode
   }
@@ -314,7 +456,8 @@ function performPostSearchScrolling() {
 async function processQueue() {
   // Check if search is stopped globally
   if (searchStopped || (mode === "interval" && !intervalSearchActive)) {
-    logger.info("Search stopped, not processing queue");
+    if (typeof logger !== "undefined")
+      logger.info("Search stopped, not processing queue");
     console.log("Search stopped, clearing queue");
     queryQueue = [];
     isProcessing = false;
@@ -322,44 +465,65 @@ async function processQueue() {
   }
 
   console.log("Starting queue processing, query count:", queryQueue.length);
-  logger.info("Starting queue processing", { queueLength: queryQueue.length });
+  if (typeof logger !== "undefined")
+    logger.info("Starting queue processing", {
+      queueLength: queryQueue.length,
+    });
 
   if (queryQueue.length === 0) {
-    logger.debug("Queue is empty, scheduling next search");
+    if (typeof logger !== "undefined")
+      logger.debug("Queue is empty, scheduling next search");
     scheduleNextSearch();
     return;
   }
 
   isProcessing = true;
   const query = queryQueue.shift();
-  logger.info("Processing query from queue", {
-    query,
-    remainingInQueue: queryQueue.length,
-  });
+  if (typeof logger !== "undefined")
+    logger.info("Processing query from queue", {
+      query,
+      remainingInQueue: queryQueue.length,
+    });
 
   try {
     let tabExists = false;
+
+    // Try to restore activeTabId from storage if null
+    if (!activeTabId) {
+      const storedData = await chrome.storage.local.get(["activeTabId"]);
+      if (storedData.activeTabId) {
+        activeTabId = storedData.activeTabId;
+        if (typeof logger !== "undefined")
+          logger.debug("Restored activeTabId from storage", { activeTabId });
+      }
+    }
+
     if (activeTabId) {
       try {
         const tab = await chrome.tabs.get(activeTabId);
         tabExists = tab && !tab.discarded;
-        logger.debug("Checking existing tab", {
-          tabId: activeTabId,
-          exists: tabExists,
-          discarded: tab?.discarded,
-        });
+        if (typeof logger !== "undefined")
+          logger.debug("Checking existing tab", {
+            tabId: activeTabId,
+            exists: tabExists,
+            discarded: tab?.discarded,
+          });
       } catch (e) {
         console.log("Tab does not exist, will create new tab");
-        logger.warn("Active tab no longer exists", {
-          tabId: activeTabId,
-          error: e.message,
-        });
+        if (typeof logger !== "undefined")
+          logger.warn("Active tab no longer exists", {
+            tabId: activeTabId,
+            error: e.message,
+          });
+        activeTabId = null; // Reset invalid ID
+        await chrome.storage.local.remove(["activeTabId"]);
       }
     }
 
     if (!tabExists) {
       // Only create new tab when really necessary
-      logger.info("Creating new tab for search", { query });
+      if (typeof logger !== "undefined")
+        logger.info("Creating new tab for search", { query });
       const tab = await new Promise((resolve) => {
         chrome.tabs.create(
           { url: `https://www.bing.com/search?q=${encodeURIComponent(query)}` },
@@ -367,19 +531,34 @@ async function processQueue() {
         );
       });
       activeTabId = tab.id;
-      logger.info("Created new tab", { tabId: activeTabId, url: tab.url });
+      // Save new tab ID to storage
+      await chrome.storage.local.set({ activeTabId: activeTabId });
+
+      if (typeof logger !== "undefined")
+        logger.info("Created new tab", { tabId: activeTabId, url: tab.url });
       await waitForTabLoad(tab.id);
     } else {
       // STRONGER APPROACH: ACTIVATE TAB BEFORE INJECTING
       console.log(`Using current tab ${activeTabId} for query: ${query}`);
-      logger.info("Using existing tab for search", {
-        tabId: activeTabId,
-        query,
-      });
+      if (typeof logger !== "undefined")
+        logger.info("Using existing tab for search", {
+          tabId: activeTabId,
+          query,
+        });
 
       // Step 1: Activate tab to ensure it's not "sleeping"
-      await chrome.tabs.update(activeTabId, { active: true });
-      logger.debug("Tab activated", { tabId: activeTabId });
+      // Note: Failing to activate (e.g. user in another app) shouldn't stop the process
+      try {
+        await chrome.tabs.update(activeTabId, { active: true });
+        if (typeof logger !== "undefined")
+          logger.debug("Tab activated", { tabId: activeTabId });
+      } catch (err) {
+        if (typeof logger !== "undefined")
+          logger.warn(
+            "Could not activate tab (user might be in another app), continuing anyway",
+            { err }
+          );
+      }
 
       // Step 2: Wait a bit for tab to be fully activated
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -403,14 +582,16 @@ async function processQueue() {
           );
         });
       } catch (error) {
-        logger.debug("Failed to stop previous scrolling", {
-          error: error.message,
-        });
+        if (typeof logger !== "undefined")
+          logger.debug("Failed to stop previous scrolling", {
+            error: error.message,
+          });
       }
 
       // Step 3: Navigate to bing.com instead of reloading
       await chrome.tabs.update(activeTabId, { url: "https://www.bing.com" });
-      logger.debug("Tab navigated to bing.com", { tabId: activeTabId });
+      if (typeof logger !== "undefined")
+        logger.debug("Tab navigated to bing.com", { tabId: activeTabId });
       await waitForTabLoad(activeTabId);
 
       // Step 4: Wait a bit more after navigation
@@ -425,11 +606,12 @@ async function processQueue() {
         console.log(
           `Trying script injection attempt ${attempt} for query: ${query}`
         );
-        logger.debug("Attempting script injection", {
-          attempt,
-          query,
-          tabId: activeTabId,
-        });
+        if (typeof logger !== "undefined")
+          logger.debug("Attempting script injection", {
+            attempt,
+            query,
+            tabId: activeTabId,
+          });
 
         try {
           const results = await new Promise((resolve, reject) => {
@@ -450,15 +632,25 @@ async function processQueue() {
           });
 
           result = results[0].result;
-          logger.debug("Script injection result", { attempt, result, query });
+          if (typeof logger !== "undefined")
+            logger.debug("Script injection result", { attempt, result, query });
 
           if (result === "success") {
             console.log(`Query input successful ${searchIndex}: ${query}`);
-            logger.info("Query executed successfully", {
-              searchIndex,
-              query,
-              attempt,
-            });
+            if (typeof logger !== "undefined")
+              logger.info("Query executed successfully", {
+                searchIndex,
+                query,
+                attempt,
+              });
+
+            // Save state immediately after success to prevent data loss if SW dies
+            if (chrome.storage && chrome.storage.local) {
+              await chrome.storage.local.set({
+                currentIndex: searchIndex,
+                intervalCount: intervalCount,
+              });
+            }
 
             // Wait for search results to load, then start scrolling
             await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -473,35 +665,39 @@ async function processQueue() {
                   },
                   () => {
                     if (chrome.runtime.lastError) {
-                      logger.debug("Post-search scrolling script failed", {
-                        error: chrome.runtime.lastError.message,
-                      });
+                      if (typeof logger !== "undefined")
+                        logger.debug("Post-search scrolling script failed", {
+                          error: chrome.runtime.lastError.message,
+                        });
                     }
                     resolve();
                   }
                 );
               });
             } catch (error) {
-              logger.debug("Post-search scrolling failed", {
-                error: error.message,
-              });
+              if (typeof logger !== "undefined")
+                logger.debug("Post-search scrolling failed", {
+                  error: error.message,
+                });
             }
 
             break;
           } else {
             console.log(`Query input failed attempt ${attempt}: ${query}`);
-            logger.warn("Query execution failed", { attempt, query, result });
+            if (typeof logger !== "undefined")
+              logger.warn("Query execution failed", { attempt, query, result });
             if (attempt < 3) {
               await new Promise((resolve) => setTimeout(resolve, 1000));
             }
           }
         } catch (error) {
           console.error(`Script injection error attempt ${attempt}:`, error);
-          logger.error("Script injection error", {
-            attempt,
-            query,
-            error: error.message,
-          });
+          if (typeof logger !== "undefined")
+            logger.error("Script injection error", {
+              attempt,
+              query,
+              error: error.message,
+            });
           if (attempt < 3) {
             await new Promise((resolve) => setTimeout(resolve, 1000));
           }
@@ -511,10 +707,11 @@ async function processQueue() {
       // If all attempts failed, create new tab as backup
       if (result === "error") {
         console.log("All attempts failed, creating new tab as backup");
-        logger.error(
-          "All script injection attempts failed, creating backup tab",
-          { query, attempts: attempt }
-        );
+        if (typeof logger !== "undefined")
+          logger.error(
+            "All script injection attempts failed, creating backup tab",
+            { query, attempts: attempt }
+          );
         const tab = await new Promise((resolve) => {
           chrome.tabs.create(
             {
@@ -524,31 +721,36 @@ async function processQueue() {
           );
         });
         activeTabId = tab.id;
-        logger.info("Created backup tab", { tabId: activeTabId });
+        await chrome.storage.local.set({ activeTabId: activeTabId });
+
+        if (typeof logger !== "undefined")
+          logger.info("Created backup tab", { tabId: activeTabId });
         await waitForTabLoad(tab.id);
       }
     }
   } catch (error) {
     console.error("Error processing query:", query, error);
-    logger.error("Error processing query", { query, error: error.message });
+    if (typeof logger !== "undefined")
+      logger.error("Error processing query", { query, error: error.message });
   }
 
   isProcessing = false;
   console.log("Finished queue processing");
-  logger.debug("Finished queue processing");
+  if (typeof logger !== "undefined") logger.debug("Finished queue processing");
 
-  // Delay before processing next query with random scrolling
-  setTimeout(async () => {
-    // Check if search is still active before continuing
-    if (searchStopped || (mode === "interval" && !intervalSearchActive)) {
-      logger.info("Search stopped, not continuing queue processing");
-      console.log("Search stopped, not continuing queue processing");
-      queryQueue = [];
-      return;
-    }
+  // Delay before processing next query - USE ALARMS INSTEAD OF TIMEOUT
+  // This ensures the Service Worker wakes up even if it was killed
+  const delay = 2000; // 2 seconds delay between processing queue items
 
-    processQueue();
-  }, 2000);
+  // Check if search is still active before continuing
+  if (searchStopped || (mode === "interval" && !intervalSearchActive)) {
+    return;
+  }
+
+  // Use alarm for next step in queue
+  if (typeof logger !== "undefined")
+    logger.debug(`Scheduling next queue item via alarm in ${delay}ms`);
+  chrome.alarms.create("continueSearch", { when: Date.now() + delay });
 }
 
 // Function to wait for tab load
@@ -567,7 +769,8 @@ function waitForTabLoad(tabId) {
 function scheduleNextSearch() {
   // Check if search is stopped globally
   if (searchStopped || (mode === "interval" && !intervalSearchActive)) {
-    logger.info("Search stopped, not scheduling next search");
+    if (typeof logger !== "undefined")
+      logger.info("Search stopped, not scheduling next search");
     console.log("Search stopped, not scheduling next search");
     return;
   }
@@ -576,63 +779,117 @@ function scheduleNextSearch() {
     // Interval mode: after every 5 searches wait 15 minutes + random(0-60s)
     if (intervalCount % 5 === 0 && intervalCount > 0) {
       // Searched 5 times, create alarm to wait 15 minutes
-      logger.info(
-        `Interval mode: Searched ${intervalCount} times (total: ${
-          searchIndex - 1
-        }), creating alarm to wait 15 minutes`,
-        {
-          intervalCount,
-          totalSearches: searchIndex - 1,
-          mode: "interval",
-        }
-      );
+      if (typeof logger !== "undefined") {
+        logger.info(
+          `Interval mode: Searched ${intervalCount} times (total: ${
+            searchIndex - 1
+          }), creating alarm to wait 15 minutes`,
+          {
+            intervalCount,
+            totalSearches: searchIndex - 1,
+            mode: "interval",
+          }
+        );
+      }
       createIntervalAlarm();
     } else {
       // Not enough 5 times, short delay with random scrolling
       const delay = getRandomDelay(3000, 8000);
-      logger.debug(
-        `Interval mode: Continue search (${intervalCount % 5}/5), delay ${
-          delay / 1000
-        }s`
-      );
-      setTimeout(async () => {
-        // Check again before starting search
-        if (searchStopped || (mode === "interval" && !intervalSearchActive)) {
-          logger.info("Search stopped during delay, not starting search");
-          console.log("Search stopped during delay, not starting search");
-          return;
-        }
+      if (typeof logger !== "undefined")
+        logger.debug(
+          `Interval mode: Continue search (${
+            intervalCount % 5
+          }/5), scheduling alarm in ${delay / 1000}s`
+        );
 
-        startSearch();
-      }, delay);
+      // USE ALARM INSTEAD OF TIMEOUT
+      chrome.alarms.create("continueSearch", { when: Date.now() + delay });
     }
   } else {
     // Continuous mode: continuous short delay with random scrolling
     const delay = getRandomDelay(3000, 15000);
-    logger.debug(
-      `Continuous mode: Schedule next search after ${delay / 1000}s`
-    );
-    setTimeout(async () => {
-      // Check if search is stopped before continuing
-      if (searchStopped) {
-        logger.info("Search stopped during delay, not starting search");
-        console.log("Search stopped during delay, not starting search");
-        return;
-      }
+    if (typeof logger !== "undefined")
+      logger.debug(
+        `Continuous mode: Schedule next search after ${
+          delay / 1000
+        }s (via alarm)`
+      );
 
-      startSearch();
-    }, delay);
+    // USE ALARM INSTEAD OF TIMEOUT
+    chrome.alarms.create("continueSearch", { when: Date.now() + delay });
   }
 }
 
 // Handle alarms - USE ALARM API CORRECTLY AND STOP BACKUP WHEN NOT NEEDED
-chrome.alarms.onAlarm.addListener((alarm) => {
-  logger.debug(`Alarm activated: ${alarm.name}`);
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (typeof logger !== "undefined")
+    logger.debug(`Alarm activated: ${alarm.name}`);
 
-  if (alarm.name === "intervalSearch") {
-    logger.info("Interval alarm triggered - official trigger", {
-      alarmName: alarm.name,
-    });
+  // Universal rehydration for any alarm (interval, backup, or continueSearch)
+  // If variables are empty (Service Worker slept), reload from storage
+  if (queries.length === 0) {
+    if (typeof logger !== "undefined")
+      logger.info(
+        "Service Worker woke up empty, rehydrating state from storage"
+      );
+    try {
+      const data = await chrome.storage.local.get([
+        "currentQueries",
+        "currentIndex",
+        "intervalCount",
+        "intervalMode",
+        "intervalSearchActive",
+        "activeTabId",
+      ]);
+
+      if (data.currentQueries) {
+        queries = data.currentQueries;
+        searchIndex = data.currentIndex || 0;
+        intervalCount = data.intervalCount || 0;
+
+        if (data.intervalMode) {
+          mode = "interval";
+          intervalSearchActive = data.intervalSearchActive;
+        } else {
+          mode = "continuous";
+        }
+
+        if (data.activeTabId) {
+          activeTabId = data.activeTabId;
+        }
+
+        if (typeof logger !== "undefined")
+          logger.info("State rehydrated successfully", {
+            searchIndex,
+            intervalCount,
+            mode,
+            activeTabId,
+          });
+      }
+    } catch (err) {
+      if (typeof logger !== "undefined")
+        logger.error("Failed to rehydrate state", err);
+    }
+  }
+
+  if (alarm.name === "continueSearch") {
+    // This alarm replaces the setTimeout logic
+    // It ensures the loop continues even if SW slept
+    if (typeof logger !== "undefined")
+      logger.debug("continueSearch alarm triggered - resuming search cycle");
+
+    // If there are items in queue (from previous session that got cut off)
+    if (queryQueue.length > 0) {
+      processQueue();
+    } else {
+      // Otherwise start next search step
+      startSearch();
+    }
+  } else if (alarm.name === "intervalSearch") {
+    if (typeof logger !== "undefined")
+      logger.info("Interval alarm triggered - official trigger", {
+        alarmName: alarm.name,
+      });
 
     // Stop backup check alarm because it triggered successfully
     chrome.alarms.clear("backupCheck");
@@ -647,261 +904,87 @@ chrome.alarms.onAlarm.addListener((alarm) => {
           "intervalStartTime",
           "intervalDelayMinutes",
         ])
-        .catch((err) => logger.error("Error removing alarm info", err));
+        .catch((err) => {
+          if (typeof logger !== "undefined")
+            logger.error("Error removing alarm info", err);
+        });
     }
   } else if (alarm.name === "backupCheck") {
     // Only log backup check every 10 minutes to reduce spam significantly
     const now = Date.now();
     if (!chrome.lastBackupLog || now - chrome.lastBackupLog > 10 * 60 * 1000) {
-      logger.debug("Backup check alarm triggered - checking status");
+      if (typeof logger !== "undefined")
+        logger.debug("Backup check alarm triggered - checking status");
       chrome.lastBackupLog = now;
     }
     ensureAlarmExists();
   }
 });
 
-// Periodic alarm check - NOT NEEDED ANYMORE BECAUSE WE HAVE BACKUP ALARM
-// setInterval(ensureAlarmExists, 30000);
-
-// Restore state when extension restarts
+// Clean state when extension restarts (Browser opened)
 chrome.runtime.onStartup.addListener(() => {
-  console.log("Extension startup - checking interval state");
-  restoreIntervalState();
+  console.log(
+    "Browser startup - Clearing previous session state per user preference."
+  );
+  if (typeof logger !== "undefined")
+    logger.info("Browser startup - Clearing previous session state.");
+
+  // Stop everything
+  searchStopped = true;
+  intervalSearchActive = false;
+  isProcessing = false;
+  queryQueue = [];
+  queries = [];
+
+  // Clear alarms and storage
+  chrome.alarms.clearAll();
+
+  // Remove only operational keys, keeping logs
+  const keysToRemove = [
+    "intervalMode",
+    "currentQueries",
+    "currentIndex",
+    "intervalCount",
+    "intervalStartTime",
+    "intervalDelayMinutes",
+    "intervalSearchActive",
+    "intervalAlarmName",
+  ];
+
+  if (chrome.storage && chrome.storage.local) {
+    chrome.storage.local
+      .remove(keysToRemove)
+      .then(() => {
+        if (typeof logger !== "undefined")
+          logger.info("Session state cleared on startup");
+      })
+      .catch((err) => console.error("Error clearing storage on startup:", err));
+  }
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  console.log("Extension installed/updated - checking interval state");
-  restoreIntervalState();
-});
+  console.log("Extension installed/updated - Resetting state.");
+  if (typeof logger !== "undefined")
+    logger.info("Extension installed/updated - Resetting state.");
 
-// Function to restore interval state - COMPATIBLE WITH NEW ALARM API
-async function restoreIntervalState() {
-  try {
-    // Check if chrome.storage exists
-    if (!chrome.storage || !chrome.storage.local) {
-      console.log("chrome.storage.local not available");
-      return;
-    }
-
-    const data = await chrome.storage.local.get([
-      "intervalMode",
-      "currentQueries",
-      "currentIndex",
-      "intervalCount",
-      "intervalStartTime",
-      "intervalDelayMinutes",
-      "intervalSearchActive",
-    ]);
-
-    if (data.intervalMode && data.currentQueries && data.intervalSearchActive) {
-      console.log("Restoring interval state");
-
-      // Restore variables
-      queries = data.currentQueries;
-      searchIndex = data.currentIndex || 0;
-      intervalCount = data.intervalCount || 0;
-      mode = "interval";
-      intervalSearchActive = true;
-
-      // Check remaining time
-      if (data.intervalStartTime && data.intervalDelayMinutes) {
-        const elapsedMinutes =
-          (Date.now() - data.intervalStartTime) / (1000 * 60);
-        const remainingMinutes = data.intervalDelayMinutes - elapsedMinutes;
-
-        console.log(
-          `Restore: Elapsed ${elapsedMinutes.toFixed(
-            1
-          )}min, Remaining ${remainingMinutes.toFixed(1)}min`
-        );
-
-        if (remainingMinutes <= 0) {
-          // Time is up, run immediately
-          console.log("Interval time expired during restore, run immediately");
-          handleIntervalTrigger();
-        } else {
-          // Time remaining, recreate alarm
-          console.log("Recreating alarm with remaining time");
-          chrome.alarms.create("intervalSearch", {
-            delayInMinutes: remainingMinutes,
-          });
-          chrome.alarms.create("backupCheck", {
-            delayInMinutes: 5,
-            periodInMinutes: 5,
-          });
-        }
-      } else {
-        // No time information, might be in normal search cycle
-        console.log("No time information, continue normal search");
-        startSearch();
-      }
-    }
-  } catch (error) {
-    console.error("Error restoring state:", error);
-  }
-}
-
-// Receive messages from popup
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === "startSearch") {
-    logger.info("Received startSearch message", {
-      mode: message.mode,
-      queriesCount: message.queries.length,
-      queries: message.queries.slice(0, 5), // Log first 5 queries for debugging
-    });
-
-    queries = message.queries;
-    mode = message.mode;
-    searchIndex = 0;
-    queryQueue = [];
-    isProcessing = false;
-    activeTabId = null;
-    intervalCount = 0;
-    searchStopped = false; // Reset stop flag when starting
-
-    // Log queries analysis
-    const failCount = queries.filter((q) => q === "fail").length;
-    const realTopicsCount = queries.length - failCount;
-    logger.info("Query analysis", {
-      totalQueries: queries.length,
-      realTopics: realTopicsCount,
-      fallbackTopics: failCount,
-      isUsingBackupTopics: failCount >= queries.length * 0.8,
-    });
-
-    // Clear old alarms
-    chrome.alarms.clearAll();
-
-    if (mode === "interval") {
-      intervalSearchActive = true;
-      console.log("Starting interval mode");
-      // Save interval state with complete information
-      if (chrome.storage && chrome.storage.local) {
-        chrome.storage.local
-          .set({
-            intervalMode: true,
-            currentQueries: queries,
-            currentIndex: 0,
-            intervalCount: 0,
-            intervalSearchActive: true,
-          })
-          .catch((err) => console.log("Cannot save to storage:", err));
-      }
-    } else {
-      intervalSearchActive = false;
-      // Clear interval state if possible
-      if (chrome.storage && chrome.storage.local) {
-        chrome.storage.local
-          .clear()
-          .catch((err) => console.log("Cannot clear storage:", err));
-      }
-    }
-
-    // Start search immediately
-    console.log("Starting first search cycle");
-    startSearch();
-    sendResponse({ status: "Search started" });
-  } else if (message.action === "stopInterval") {
-    // Stop interval - CLEAR ALL ALARMS AND RESET STATE
-    searchStopped = true; // Set global stop flag
-    intervalSearchActive = false;
-    isProcessing = false; // Stop any ongoing processing
-    queryQueue = []; // Clear the query queue
-    chrome.alarms.clearAll();
-    if (chrome.storage && chrome.storage.local) {
-      chrome.storage.local
-        .clear()
-        .catch((err) => console.log("Cannot clear storage:", err));
-    }
-    console.log("Stopped interval mode, cleared all alarms and reset state");
-    logger.info("Interval mode stopped - all operations halted", {
-      clearedAlarms: true,
-      clearedQueue: true,
-      resetProcessing: true,
-    });
-    sendResponse({ status: "Interval stopped" });
-  } else if (message.action === "stopAll") {
-    // Stop all searches - both continuous and interval
-    searchStopped = true; // Set global stop flag
-    intervalSearchActive = false;
-    isProcessing = false; // Stop any ongoing processing
-    queryQueue = []; // Clear the query queue
-    chrome.alarms.clearAll();
-
-    // Immediately stop scrolling on active tab if exists
-    if (activeTabId) {
-      try {
-        chrome.scripting.executeScript(
-          {
-            target: { tabId: activeTabId },
-            func: () => {
-              if (window.stopScrolling) {
-                window.stopScrolling();
-                console.log("All scrolling stopped immediately by stopAll");
-              }
-            },
-          },
-          () => {
-            if (chrome.runtime.lastError) {
-              console.log(
-                "Could not stop scrolling:",
-                chrome.runtime.lastError.message
-              );
-            }
-          }
-        );
-      } catch (error) {
-        console.log("Failed to stop scrolling:", error.message);
-      }
-    }
-
-    // Stop scrolling on all tabs (in case there are multiple)
-    chrome.tabs.query({}, (tabs) => {
-      tabs.forEach((tab) => {
-        try {
-          chrome.scripting.executeScript(
-            {
-              target: { tabId: tab.id },
-              func: () => {
-                if (window.stopScrolling) {
-                  window.stopScrolling();
-                  console.log(
-                    "Scrolling stopped on tab:",
-                    window.location.href
-                  );
-                }
-              },
-            },
-            () => {
-              // Ignore errors for tabs that can't execute scripts
-            }
-          );
-        } catch (error) {
-          // Ignore errors for tabs that can't execute scripts
-        }
-      });
-    });
-
-    if (chrome.storage && chrome.storage.local) {
-      chrome.storage.local
-        .clear()
-        .catch((err) => console.log("Cannot clear storage:", err));
-    }
-    console.log("Stopped all searches, cleared all alarms and reset state");
-    logger.info("All searches stopped - all operations halted", {
-      clearedAlarms: true,
-      clearedQueue: true,
-      resetProcessing: true,
-      stoppedScrolling: true,
-    });
-    sendResponse({ status: "All searches stopped" });
-  } else if (message.action === "downloadLogs") {
-    // Download app.log file
-    logger.info("Download logs request received from popup");
-    downloadLogFile();
-    sendResponse({ status: "Logs download initiated" });
+  chrome.alarms.clearAll();
+  if (chrome.storage && chrome.storage.local) {
+    // On install/update, we might want a full clear, or just operational
+    // Let's do a full clear to be safe and avoid version conflicts
+    chrome.storage.local
+      .clear()
+      .catch((err) => console.log("Cannot clear storage:", err));
   }
 });
+
+// Periodic alarm check - NOT NEEDED ANYMORE BECAUSE WE HAVE BACKUP ALARM
+// setInterval(ensureAlarmExists, 30000);
+
+// Restore state when extension restarts - REMOVED as per user request
+// chrome.runtime.onStartup.addListener(() => {
+//   console.log("Extension startup - checking interval state");
+//   restoreIntervalState();
+// });
 
 // Debounce variables for download
 let lastDownloadTime = 0;
@@ -914,20 +997,28 @@ async function downloadLogFile() {
     const now = Date.now();
     if (now - lastDownloadTime < DOWNLOAD_DEBOUNCE_MS) {
       console.log("Download request ignored - too frequent");
-      logger.warn("Download request too frequent", {
-        timeSinceLastDownload: now - lastDownloadTime,
-        debounceTime: DOWNLOAD_DEBOUNCE_MS,
-      });
+      if (typeof logger !== "undefined") {
+        logger.warn("Download request too frequent", {
+          timeSinceLastDownload: now - lastDownloadTime,
+          debounceTime: DOWNLOAD_DEBOUNCE_MS,
+        });
+      }
       return;
     }
     lastDownloadTime = now;
 
-    logger.info("Starting log file download process");
-    await logger.loadFromStorage();
-    const logContent = logger.getLogContent();
+    if (typeof logger !== "undefined")
+      logger.info("Starting log file download process");
+    if (typeof logger !== "undefined") await logger.loadFromStorage();
+
+    const logContent =
+      typeof logger !== "undefined"
+        ? logger.getLogContent()
+        : "Logger not initialized";
 
     if (!logContent || logContent.trim() === "") {
-      logger.warn("No logs available for download");
+      if (typeof logger !== "undefined")
+        logger.warn("No logs available for download");
       // Store empty download ready state
       await chrome.storage.local.set({
         downloadReady: {
@@ -949,9 +1040,13 @@ async function downloadLogFile() {
       },
     });
 
-    logger.info("Log file prepared for download", { size: logContent.length });
+    if (typeof logger !== "undefined")
+      logger.info("Log file prepared for download", {
+        size: logContent.length,
+      });
   } catch (error) {
-    logger.error("Failed to prepare log file for download", error);
+    if (typeof logger !== "undefined")
+      logger.error("Failed to prepare log file for download", error);
     // Store error state
     try {
       await chrome.storage.local.set({

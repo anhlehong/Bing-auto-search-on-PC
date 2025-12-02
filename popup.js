@@ -113,15 +113,16 @@ function startSearch(mode) {
     console.log("Invalid search count, using default: 90");
     searchCount = 90;
   }
-  const apiCount = searchCount + 1; // Get N + 1 topics
-  console.log(`Requesting ${apiCount} topics from API for ${mode} mode`);
+  // Fetch a few extra in case of API dupes/fails, but we will slice exact amount later
+  const apiRequestCount = searchCount + 5;
+  console.log(`Requesting ${apiRequestCount} topics from API for ${mode} mode`);
 
   const url = "https://en.wikipedia.org/w/api.php";
   const params = new URLSearchParams({
     action: "query",
     format: "json",
     list: "random",
-    rnlimit: apiCount.toString(),
+    rnlimit: apiRequestCount.toString(),
     rnnamespace: "0",
     origin: "*",
   });
@@ -153,11 +154,13 @@ function startSearch(mode) {
         queries
       );
 
-      // Ensure we have enough queries
-      while (queries.length < apiCount) {
+      // Ensure we have enough queries (fill with 'fail' if API returned less)
+      const targetCount = searchCount + 1;
+      while (queries.length < targetCount) {
         queries.push("fail");
       }
-      queries = queries.slice(0, apiCount);
+      // SLICE TO USER REQUESTED NUMBER + 1
+      queries = queries.slice(0, targetCount);
 
       chrome.runtime.sendMessage(
         { action: "startSearch", queries: queries, mode: mode },
@@ -168,10 +171,10 @@ function startSearch(mode) {
           );
 
           if (mode === "interval") {
-            statusDiv.textContent = "Interval mode started!";
+            statusDiv.textContent = `Interval mode started! (${queries.length} searches)`;
             statusDiv.style.color = "#28a745";
           } else {
-            statusDiv.textContent = "Search started!";
+            statusDiv.textContent = `Search started! (${queries.length} searches)`;
             statusDiv.style.color = "#28a745";
           }
         }
@@ -190,7 +193,8 @@ function startSearch(mode) {
 
       // Use backup topics after showing error
       setTimeout(() => {
-        const queries = Array(apiCount).fill("fail");
+        // Create exact number of backup queries (N + 1)
+        const queries = Array(searchCount + 1).fill("fail");
         chrome.runtime.sendMessage(
           { action: "startSearch", queries: queries, mode: mode },
           (response) => {
