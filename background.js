@@ -6,8 +6,21 @@ self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", () => self.clients.claim());
 
 // Register message listener EARLY to ensure it's ready when popup sends message
+let lastStartSearchTime = 0;
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "startSearch") {
+    // Debounce startSearch to prevent double-execution
+    const now = Date.now();
+    if (now - lastStartSearchTime < 2000) {
+      console.log("Ignoring duplicate startSearch request");
+      if (typeof logger !== "undefined") {
+        logger.warn("Ignoring duplicate startSearch request");
+      }
+      sendResponse({ status: "Ignored duplicate request" });
+      return true;
+    }
+    lastStartSearchTime = now;
+
     if (typeof logger !== "undefined") {
       logger.info("Received startSearch message", {
         mode: message.mode,
@@ -313,7 +326,19 @@ async function startSearch() {
       chrome.tabs.update(activeTabId, { url: "https://rewards.bing.com" });
     }
 
-    // STOP HERE - Do not reset interval mode to loop forever
+    // STOP HERE - Reset state to ensure UI updates
+    console.log(`Completed all ${queries.length} queries. Stopping and clearing state.`);
+    
+    intervalSearchActive = false;
+    searchStopped = true;
+    chrome.alarms.clearAll();
+    
+    if (chrome.storage && chrome.storage.local) {
+      chrome.storage.local
+        .clear()
+        .catch((err) => console.log("Cannot clear storage:", err));
+    }
+
     if (typeof logger !== "undefined")
       logger.info(`Completed all ${queries.length} queries. Stopping.`);
     return;
@@ -335,6 +360,14 @@ async function startSearch() {
     }
     searchIndex++;
     intervalCount++; // Increase counter for interval mode
+    
+    // Save state immediately to ensure count is accurate even if crashed
+    if (chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set({
+        currentIndex: searchIndex,
+        intervalCount: intervalCount
+      });
+    }
   }
 
   await processQueue();
@@ -502,23 +535,14 @@ async function processQueue() {
       try {
         const tab = await chrome.tabs.get(activeTabId);
         tabExists = tab && !tab.discarded;
-        if (typeof logger !== "undefined")
-          logger.debug("Checking existing tab", {
-            tabId: activeTabId,
-            exists: tabExists,
-            discarded: tab?.discarded,
-          });
       } catch (e) {
         console.log("Tab does not exist, will create new tab");
-        if (typeof logger !== "undefined")
-          logger.warn("Active tab no longer exists", {
-            tabId: activeTabId,
-            error: e.message,
-          });
-        activeTabId = null; // Reset invalid ID
+        activeTabId = null;
         await chrome.storage.local.remove(["activeTabId"]);
       }
     }
+
+    if (searchStopped) { isProcessing = false; return; } // CHECK STOP
 
     if (!tabExists) {
       // Only create new tab when really necessary
@@ -531,37 +555,23 @@ async function processQueue() {
         );
       });
       activeTabId = tab.id;
-      // Save new tab ID to storage
       await chrome.storage.local.set({ activeTabId: activeTabId });
-
-      if (typeof logger !== "undefined")
-        logger.info("Created new tab", { tabId: activeTabId, url: tab.url });
       await waitForTabLoad(tab.id);
     } else {
       // STRONGER APPROACH: ACTIVATE TAB BEFORE INJECTING
       console.log(`Using current tab ${activeTabId} for query: ${query}`);
-      if (typeof logger !== "undefined")
-        logger.info("Using existing tab for search", {
-          tabId: activeTabId,
-          query,
-        });
-
-      // Step 1: Activate tab to ensure it's not "sleeping"
-      // Note: Failing to activate (e.g. user in another app) shouldn't stop the process
+      
+      // Step 1: Activate tab
       try {
         await chrome.tabs.update(activeTabId, { active: true });
-        if (typeof logger !== "undefined")
-          logger.debug("Tab activated", { tabId: activeTabId });
-      } catch (err) {
-        if (typeof logger !== "undefined")
-          logger.warn(
-            "Could not activate tab (user might be in another app), continuing anyway",
-            { err }
-          );
-      }
+      } catch (err) {}
+
+      if (searchStopped) { isProcessing = false; return; } // CHECK STOP
 
       // Step 2: Wait a bit for tab to be fully activated
       await new Promise((resolve) => setTimeout(resolve, 500));
+      
+      if (searchStopped) { isProcessing = false; return; } // CHECK STOP
 
       // Step 2.5: Stop any previous scrolling before navigation
       try {
@@ -570,49 +580,33 @@ async function processQueue() {
             {
               target: { tabId: activeTabId },
               func: () => {
-                if (window.stopScrolling) {
-                  window.stopScrolling();
-                  console.log("Previous scrolling stopped");
-                }
+                if (window.stopScrolling) window.stopScrolling();
               },
             },
-            () => {
-              resolve();
-            }
+            () => resolve()
           );
         });
-      } catch (error) {
-        if (typeof logger !== "undefined")
-          logger.debug("Failed to stop previous scrolling", {
-            error: error.message,
-          });
-      }
+      } catch (error) {}
 
       // Step 3: Navigate to bing.com instead of reloading
       await chrome.tabs.update(activeTabId, { url: "https://www.bing.com" });
-      if (typeof logger !== "undefined")
-        logger.debug("Tab navigated to bing.com", { tabId: activeTabId });
       await waitForTabLoad(activeTabId);
+
+      if (searchStopped) { isProcessing = false; return; } // CHECK STOP
 
       // Step 4: Wait a bit more after navigation
       await new Promise((resolve) => setTimeout(resolve, 1000));
+
+      if (searchStopped) { isProcessing = false; return; } // CHECK STOP
 
       // Step 5: Inject script with retry mechanism
       let attempt = 0;
       let result = "error";
 
       while (attempt < 3 && result === "error") {
-        attempt++;
-        console.log(
-          `Trying script injection attempt ${attempt} for query: ${query}`
-        );
-        if (typeof logger !== "undefined")
-          logger.debug("Attempting script injection", {
-            attempt,
-            query,
-            tabId: activeTabId,
-          });
+        if (searchStopped) { isProcessing = false; return; } // CHECK STOP
 
+        attempt++;
         try {
           const results = await new Promise((resolve, reject) => {
             chrome.scripting.executeScript(
@@ -631,20 +625,13 @@ async function processQueue() {
             );
           });
 
-          result = results[0].result;
-          if (typeof logger !== "undefined")
-            logger.debug("Script injection result", { attempt, result, query });
+          if (searchStopped) { isProcessing = false; return; } // CHECK STOP (after script returns)
 
+          result = results[0].result;
           if (result === "success") {
             console.log(`Query input successful ${searchIndex}: ${query}`);
-            if (typeof logger !== "undefined")
-              logger.info("Query executed successfully", {
-                searchIndex,
-                query,
-                attempt,
-              });
-
-            // Save state immediately after success to prevent data loss if SW dies
+            
+            // Save state immediately after success
             if (chrome.storage && chrome.storage.local) {
               await chrome.storage.local.set({
                 currentIndex: searchIndex,
@@ -652,8 +639,10 @@ async function processQueue() {
               });
             }
 
-            // Wait for search results to load, then start scrolling
+            // Wait for search results to load
             await new Promise((resolve) => setTimeout(resolve, 2000));
+
+            if (searchStopped) { isProcessing = false; return; } // CHECK STOP
 
             // Perform post-search scrolling
             try {
@@ -663,41 +652,18 @@ async function processQueue() {
                     target: { tabId: activeTabId },
                     func: performPostSearchScrolling,
                   },
-                  () => {
-                    if (chrome.runtime.lastError) {
-                      if (typeof logger !== "undefined")
-                        logger.debug("Post-search scrolling script failed", {
-                          error: chrome.runtime.lastError.message,
-                        });
-                    }
-                    resolve();
-                  }
+                  () => resolve()
                 );
               });
-            } catch (error) {
-              if (typeof logger !== "undefined")
-                logger.debug("Post-search scrolling failed", {
-                  error: error.message,
-                });
-            }
+            } catch (error) {}
 
             break;
           } else {
-            console.log(`Query input failed attempt ${attempt}: ${query}`);
-            if (typeof logger !== "undefined")
-              logger.warn("Query execution failed", { attempt, query, result });
             if (attempt < 3) {
               await new Promise((resolve) => setTimeout(resolve, 1000));
             }
           }
         } catch (error) {
-          console.error(`Script injection error attempt ${attempt}:`, error);
-          if (typeof logger !== "undefined")
-            logger.error("Script injection error", {
-              attempt,
-              query,
-              error: error.message,
-            });
           if (attempt < 3) {
             await new Promise((resolve) => setTimeout(resolve, 1000));
           }
@@ -706,12 +672,8 @@ async function processQueue() {
 
       // If all attempts failed, create new tab as backup
       if (result === "error") {
-        console.log("All attempts failed, creating new tab as backup");
-        if (typeof logger !== "undefined")
-          logger.error(
-            "All script injection attempts failed, creating backup tab",
-            { query, attempts: attempt }
-          );
+        if (searchStopped) { isProcessing = false; return; } // CHECK STOP
+        
         const tab = await new Promise((resolve) => {
           chrome.tabs.create(
             {
@@ -722,9 +684,6 @@ async function processQueue() {
         });
         activeTabId = tab.id;
         await chrome.storage.local.set({ activeTabId: activeTabId });
-
-        if (typeof logger !== "undefined")
-          logger.info("Created backup tab", { tabId: activeTabId });
         await waitForTabLoad(tab.id);
       }
     }
@@ -738,19 +697,28 @@ async function processQueue() {
   console.log("Finished queue processing");
   if (typeof logger !== "undefined") logger.debug("Finished queue processing");
 
-  // Delay before processing next query - USE ALARMS INSTEAD OF TIMEOUT
-  // This ensures the Service Worker wakes up even if it was killed
-  const delay = 2000; // 2 seconds delay between processing queue items
-
   // Check if search is still active before continuing
   if (searchStopped || (mode === "interval" && !intervalSearchActive)) {
+    console.log("Search stopped after processQueue");
     return;
   }
 
-  // Use alarm for next step in queue
-  if (typeof logger !== "undefined")
-    logger.debug(`Scheduling next queue item via alarm in ${delay}ms`);
-  chrome.alarms.create("continueSearch", { when: Date.now() + delay });
+  // Logic to determine next step
+  if (queryQueue.length > 0) {
+    // If there are still items in the queue (unlikely in current logic but possible), 
+    // process next item after short delay
+    const delay = 2000; 
+    if (typeof logger !== "undefined")
+      logger.debug(`Queue not empty, scheduling next item in ${delay}ms`);
+    chrome.alarms.create("continueSearch", { when: Date.now() + delay });
+  } else {
+    // Queue is empty, this specific search step is done.
+    // Now we schedule the next search using scheduleNextSearch, 
+    // which handles the Interval logic (5 searches -> 15min pause)
+    if (typeof logger !== "undefined")
+      logger.debug("Queue empty, invoking scheduleNextSearch for interval logic");
+    scheduleNextSearch();
+  }
 }
 
 // Function to wait for tab load
@@ -772,6 +740,14 @@ function scheduleNextSearch() {
     if (typeof logger !== "undefined")
       logger.info("Search stopped, not scheduling next search");
     console.log("Search stopped, not scheduling next search");
+    return;
+  }
+
+  // Check if we are done with all queries - if so, don't schedule any wait, just finish
+  if (searchIndex >= queries.length) {
+    if (typeof logger !== "undefined")
+      logger.info("All queries completed, skipping next search schedule to finish immediately");
+    startSearch();
     return;
   }
 

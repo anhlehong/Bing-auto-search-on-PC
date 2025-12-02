@@ -107,6 +107,13 @@ function testWikipediaAPI() {
 
 function startSearch(mode) {
   console.log(`Search button clicked for ${mode} mode`);
+
+  // Disable buttons to prevent double-click
+  const searchButton = document.getElementById("searchButton");
+  const intervalButton = document.getElementById("searchIntervalButton");
+  searchButton.disabled = true;
+  intervalButton.disabled = true;
+
   const searchCountInput = document.getElementById("searchCount").value;
   let searchCount = parseInt(searchCountInput) || 90; // Default 90
   if (searchCount < 1 || searchCount > 100) {
@@ -177,6 +184,12 @@ function startSearch(mode) {
             statusDiv.textContent = `Search started! (${queries.length} searches)`;
             statusDiv.style.color = "#28a745";
           }
+
+          // Re-enable buttons after successful start
+          setTimeout(() => {
+            searchButton.disabled = false;
+            intervalButton.disabled = false;
+          }, 2000);
         }
       );
     })
@@ -205,6 +218,10 @@ function startSearch(mode) {
 
             statusDiv.textContent = "Search started (backup topics)!";
             statusDiv.style.color = "#ffc107";
+
+            // Re-enable buttons
+            searchButton.disabled = false;
+            intervalButton.disabled = false;
           }
         );
       }, 2000);
