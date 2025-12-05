@@ -1,5 +1,181 @@
 console.log("popup.js loaded");
 
+const BACKUP_TOPICS = [
+  "Technology", "Artificial Intelligence", "Machine Learning", "Python", "JavaScript",
+  "Space Exploration", "Mars", "Moon", "Solar System", "Galaxy",
+  "History", "Ancient Rome", "Ancient Egypt", "World War II", "Renaissance",
+  "Nature", "Forests", "Oceans", "Mountains", "Wildlife", "Climate Change",
+  "Health", "Nutrition", "Exercise", "Mental Health", "Meditation",
+  "Science", "Physics", "Chemistry", "Biology", "Astronomy",
+  "Art", "Painting", "Sculpture", "Photography", "Digital Art",
+  "Music", "Classical Music", "Jazz", "Rock", "Pop Music",
+  "Movies", "Cinema", "Hollywood", "Oscars", "Film Direction",
+  "Travel", "Tourism", "Adventure", "Destinations", "Culture",
+  "Food", "Cooking", "Recipes", "Restaurants", "Cuisines",
+  "Sports", "Football", "Basketball", "Tennis", "Olympics",
+  "Economics", "Finance", "Investing", "Stock Market", "Business",
+  "Politics", "Democracy", "Government", "Law", "Human Rights",
+  "Education", "University", "School", "Learning", "Online Courses",
+  "Books", "Literature", "Novels", "Poetry", "Authors",
+  "Gaming", "Video Games", "Esports", "Consoles", "PC Gaming"
+];
+
+function getBackupTopics(count) {
+  const results = [];
+  for (let i = 0; i < count; i++) {
+    const randomTopic = BACKUP_TOPICS[Math.floor(Math.random() * BACKUP_TOPICS.length)];
+    // Add a random suffix to ensure uniqueness and variety in search results
+    results.push(`${randomTopic} ${Math.floor(Math.random() * 1000)}`);
+  }
+  return results;
+}
+
+// Professional Helper to fetch topics using a Waterfall Redundancy Strategy
+async function fetchWikipediaTopics(count) {
+  console.group("🔍 Topic Fetching System Started");
+  console.log(`Target: ${count} topics`);
+  
+  let results = [];
+
+  // --- STRATEGY 1: Wikipedia Action API (The Gold Standard) ---
+  try {
+    console.time("Strategy 1 (Wiki)");
+    console.log("👉 Attempting Strategy 1: Wikipedia Action API (Batched)...");
+    
+    const BATCH_SIZE = 10; // Safe batch size to avoid strict limits
+    const batches = Math.ceil(count / BATCH_SIZE);
+    const promises = [];
+
+    for (let i = 0; i < batches; i++) {
+      const currentBatchSize = Math.min(BATCH_SIZE, count - (i * BATCH_SIZE));
+      const params = new URLSearchParams({
+        action: "query",
+        format: "json",
+        list: "random",
+        rnlimit: currentBatchSize.toString(),
+        rnnamespace: "0",
+        origin: "*",
+      });
+
+      promises.push(
+        fetch(`https://en.wikipedia.org/w/api.php?${params}`)
+          .then(res => {
+             if (!res.ok) throw new Error(`HTTP ${res.status}`);
+             return res.json();
+          })
+          .then(data => data.query?.random?.map(item => item.title) || [])
+      );
+    }
+
+    const batchResults = await Promise.all(promises);
+    batchResults.forEach(batch => results.push(...batch));
+    
+    if (results.length >= count * 0.8) { // Accept if we got at least 80% of requests
+      console.log(`✅ Strategy 1 Success: Retrieved ${results.length} topics from Wikipedia.`);
+      console.timeEnd("Strategy 1 (Wiki)");
+      console.groupEnd();
+      return { topics: results, source: "Wikipedia" };
+    } else {
+      throw new Error("Wikipedia returned insufficient results.");
+    }
+  } catch (error) {
+    console.warn(`❌ Strategy 1 Failed: ${error.message}`);
+    console.timeEnd("Strategy 1 (Wiki)");
+    results = []; // Reset for next strategy
+  }
+
+  // --- STRATEGY 2: Datamuse API (Semantic Association) ---
+  // Limit: 100,000 calls/day. Very reliable.
+  try {
+    console.time("Strategy 2 (Datamuse)");
+    console.log("👉 Attempting Strategy 2: Datamuse API (Semantic Search)...");
+    
+    // Rotate seeds to keep searches fresh
+    const seeds = ['technology', 'science', 'history', 'nature', 'business', 'art'];
+    const seed = seeds[Math.floor(Math.random() * seeds.length)];
+    
+    // 'ml' means "means like" or related to.
+    const response = await fetch(`https://api.datamuse.com/words?ml=${seed}&max=${count + 5}`);
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (Array.isArray(data) && data.length > 0) {
+        results = data.map(item => item.word);
+        console.log(`✅ Strategy 2 Success: Retrieved ${results.length} topics related to '${seed}'.`);
+        console.timeEnd("Strategy 2 (Datamuse)");
+        console.groupEnd();
+        return { topics: results, source: "Datamuse" };
+      }
+    }
+    throw new Error("Datamuse returned empty/invalid data");
+  } catch (error) {
+    console.warn(`❌ Strategy 2 Failed: ${error.message}`);
+    console.timeEnd("Strategy 2 (Datamuse)");
+  }
+
+  // --- STRATEGY 3: Random Data API (Structured Data) ---
+  // Limit: Flexible, good for batching.
+  try {
+    console.time("Strategy 3 (RandomData)");
+    console.log("👉 Attempting Strategy 3: Random Data API (Structured)...");
+    
+    // Randomize between food and appliances for variety
+    const types = ['food', 'appliance'];
+    const type = types[Math.floor(Math.random() * types.length)];
+    
+    // This API supports a 'size' parameter
+    const response = await fetch(`https://random-data-api.com/api/v2/${type}s?size=${count}`);
+    
+    if (response.ok) {
+      const data = await response.json();
+      // Data can be an array or single object if size=1 (unlikely here but safe to check)
+      const dataArray = Array.isArray(data) ? data : [data];
+      
+      results = dataArray.map(item => {
+        // Map fields based on type
+        return item.dish || item.equipment || "Random Thing"; 
+      }).filter(t => t !== "Random Thing");
+
+      if (results.length > 0) {
+        console.log(`✅ Strategy 3 Success: Retrieved ${results.length} items of type '${type}'.`);
+        console.timeEnd("Strategy 3 (RandomData)");
+        console.groupEnd();
+        return { topics: results, source: "Random Data API" };
+      }
+    }
+    throw new Error("Random Data API failed");
+  } catch (error) {
+    console.warn(`❌ Strategy 3 Failed: ${error.message}`);
+    console.timeEnd("Strategy 3 (RandomData)");
+  }
+
+  // --- STRATEGY 4: Random Word API (Last Resort External) ---
+  try {
+    console.time("Strategy 4 (RandomWord)");
+    console.log("👉 Attempting Strategy 4: Random Word API...");
+    
+    const response = await fetch(`https://random-word-api.herokuapp.com/word?number=${count}`);
+    if (response.ok) {
+      const words = await response.json();
+      if (Array.isArray(words) && words.length > 0) {
+        console.log(`✅ Strategy 4 Success: Retrieved ${words.length} random words.`);
+        console.timeEnd("Strategy 4 (RandomWord)");
+        console.groupEnd();
+        return { topics: words, source: "Random Word API" };
+      }
+    }
+    throw new Error("Random Word API failed");
+  } catch (error) {
+    console.warn(`❌ Strategy 4 Failed: ${error.message}`);
+    console.timeEnd("Strategy 4 (RandomWord)");
+  }
+
+  // --- FINAL FAILURE ---
+  console.error("⛔ All API Strategies Failed. Falling back to local hardcoded list.");
+  console.groupEnd();
+  return { topics: [], source: "Local Backup" }; // Returns empty to trigger getBackupTopics() in the caller but identifies source
+}
+
 // Check interval status when popup opens
 document.addEventListener("DOMContentLoaded", async () => {
   try {
@@ -39,193 +215,104 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 });
 
-function testWikipediaAPI() {
-  console.log("Testing Wikipedia API directly...");
-  const url = "https://en.wikipedia.org/w/api.php";
-  const params = new URLSearchParams({
-    action: "query",
-    format: "json",
-    list: "random",
-    rnlimit: "5",
-    rnnamespace: "0",
-    origin: "*",
-  });
-
+async function testWikipediaAPI() {
+  console.log("Testing APIs...");
   const statusDiv = document.getElementById("status");
-  statusDiv.textContent = "Testing Wikipedia API...";
+  statusDiv.textContent = "Testing connectivity & APIs...";
   statusDiv.style.color = "#007bff";
 
-  // First test basic connectivity
-  fetch("https://www.google.com", { mode: "no-cors" })
-    .then(() => {
-      console.log("Basic internet connectivity OK");
-      // Now test Wikipedia API
-      return fetch(`${url}?${params}`);
-    })
-    .catch(() => {
-      throw new Error("No internet connection");
-    })
-    .then((response) => {
-      console.log(
-        `API Test - Status: ${response.status} ${response.statusText}`
-      );
-      console.log("API Test - Response headers:", [
-        ...response.headers.entries(),
-      ]);
+  try {
+    // 1. Test Connectivity
+    await fetch("https://www.google.com", { mode: "no-cors" });
+    console.log("Connectivity OK");
 
-      if (!response.ok) {
-        throw new Error(
-          `HTTP error! status: ${response.status} ${response.statusText}`
-        );
-      }
-      return response.json();
-    })
-    .then((data) => {
-      console.log("API Test - Success! Data:", data);
-      if (data.query && data.query.random && data.query.random.length > 0) {
-        const topics = data.query.random.map((item) => item.title);
-        statusDiv.textContent = `API OK! Got ${topics.length} topics`;
-        statusDiv.style.color = "#28a745";
-        console.log("API Test - Topics:", topics);
-      } else {
-        statusDiv.textContent = "API returned empty data";
-        statusDiv.style.color = "#ffc107";
-      }
-    })
-    .catch((error) => {
-      console.error("API Test - Error:", error);
-      if (error.message.includes("No internet connection")) {
-        statusDiv.textContent = "No internet connection";
-      } else if (error.message.includes("Failed to fetch")) {
-        statusDiv.textContent = "Network error - check CORS/permissions";
-      } else {
-        statusDiv.textContent = `API Test Failed: ${error.message}`;
-      }
-      statusDiv.style.color = "#dc3545";
-    });
+    // 2. Test Topics Fetcher
+    const { topics, source } = await fetchWikipediaTopics(5);
+    
+    if (topics.length > 0) {
+      statusDiv.textContent = `[${source}] API Success! Got ${topics.length} items. Sample: ${topics[0]}`;
+      statusDiv.style.color = "#28a745";
+      console.log("API Test Topics:", topics);
+    } else {
+      throw new Error("All APIs failed");
+    }
+
+  } catch (error) {
+    console.error("API Test Error:", error);
+    statusDiv.textContent = `API Error: ${error.message}. System will use local backups.`;
+    statusDiv.style.color = "#dc3545";
+  }
 }
 
 function startSearch(mode) {
   console.log(`Search button clicked for ${mode} mode`);
 
-  // Disable buttons to prevent double-click
   const searchButton = document.getElementById("searchButton");
   const intervalButton = document.getElementById("searchIntervalButton");
   searchButton.disabled = true;
   intervalButton.disabled = true;
 
   const searchCountInput = document.getElementById("searchCount").value;
-  let searchCount = parseInt(searchCountInput) || 90; // Default 90
+  let searchCount = parseInt(searchCountInput) || 90;
   if (searchCount < 1 || searchCount > 100) {
-    console.log("Invalid search count, using default: 90");
     searchCount = 90;
   }
-  // Fetch a few extra in case of API dupes/fails, but we will slice exact amount later
-  const apiRequestCount = searchCount + 5;
-  console.log(`Requesting ${apiRequestCount} topics from API for ${mode} mode`);
-
-  const url = "https://en.wikipedia.org/w/api.php";
-  const params = new URLSearchParams({
-    action: "query",
-    format: "json",
-    list: "random",
-    rnlimit: apiRequestCount.toString(),
-    rnnamespace: "0",
-    origin: "*",
-  });
-
+  
+  // Request slightly more to be safe
+  const targetCount = searchCount + 5;
   const statusDiv = document.getElementById("status");
-  statusDiv.textContent = "Loading topics...";
+  statusDiv.textContent = "Fetching topics...";
   statusDiv.style.color = "#007bff";
 
-  fetch(`${url}?${params}`)
-    .then((response) => {
-      console.log(
-        `Wikipedia API response status: ${response.status} ${response.statusText}`
-      );
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+  fetchWikipediaTopics(targetCount).then((result) => {
+    let { topics: queries, source } = result;
+    console.log(`Fetched ${queries.length} topics from ${source}`);
+    
+    // Fill with backups if needed
+    if (queries.length < targetCount) {
+      const needed = targetCount - queries.length;
+      console.log(`API missing ${needed} topics, using backups...`);
+      const backups = getBackupTopics(needed);
+      queries.push(...backups);
+    }
+
+    // Slice to exact needed + a buffer
+    queries = queries.slice(0, targetCount);
+
+    // Add source name as the first search query
+    queries.unshift(source);
+
+    chrome.runtime.sendMessage(
+      { action: "startSearch", queries: queries, mode: mode },
+      (response) => {
+        console.log(`Message sent to background for ${mode}, response:`, response);
+
+        const msg = mode === "interval" ? "Interval mode started!" : "Search started!";
+        statusDiv.textContent = `[${source}] ${msg} (${queries.length} topics)`;
+        statusDiv.style.color = "#28a745";
+
+        setTimeout(() => {
+          searchButton.disabled = false;
+          intervalButton.disabled = false;
+        }, 2000);
       }
-      return response.json();
-    })
-    .then((data) => {
-      console.log("Wikipedia API response data:", data);
-
-      if (!data.query || !data.query.random) {
-        throw new Error("Invalid API response structure");
-      }
-
-      let queries = data.query.random.map((item) => item.title);
-      console.log(
-        `Loaded ${queries.length} topics from API for ${mode} mode:`,
-        queries
-      );
-
-      // Ensure we have enough queries (fill with 'fail' if API returned less)
-      const targetCount = searchCount + 1;
-      while (queries.length < targetCount) {
-        queries.push("fail");
-      }
-      // SLICE TO USER REQUESTED NUMBER + 1
-      queries = queries.slice(0, targetCount);
-
-      chrome.runtime.sendMessage(
-        { action: "startSearch", queries: queries, mode: mode },
+    );
+  }).catch(err => {
+    // This should rarely happen as fetchWikipediaTopics handles errors internally, 
+    // but just in case of catastrophic failure:
+    console.error("Critical error in startSearch:", err);
+    const backups = getBackupTopics(targetCount);
+    
+    chrome.runtime.sendMessage(
+        { action: "startSearch", queries: backups, mode: mode },
         (response) => {
-          console.log(
-            `Message sent to background for ${mode} mode, response:`,
-            response
-          );
-
-          if (mode === "interval") {
-            statusDiv.textContent = `Interval mode started! (${queries.length} searches)`;
-            statusDiv.style.color = "#28a745";
-          } else {
-            statusDiv.textContent = `Search started! (${queries.length} searches)`;
-            statusDiv.style.color = "#28a745";
-          }
-
-          // Re-enable buttons after successful start
-          setTimeout(() => {
-            searchButton.disabled = false;
-            intervalButton.disabled = false;
-          }, 2000);
-        }
-      );
-    })
-    .catch((error) => {
-      console.error(`Error fetching Wikipedia API for ${mode} mode:`, error);
-      console.error("Error details:", {
-        message: error.message,
-        stack: error.stack,
-        url: `${url}?${params}`,
-      });
-
-      statusDiv.textContent = `API Error: ${error.message}`;
-      statusDiv.style.color = "#dc3545";
-
-      // Use backup topics after showing error
-      setTimeout(() => {
-        // Create exact number of backup queries (N + 1)
-        const queries = Array(searchCount + 1).fill("fail");
-        chrome.runtime.sendMessage(
-          { action: "startSearch", queries: queries, mode: mode },
-          (response) => {
-            console.log(
-              `Message sent with backup topics for ${mode} mode, response:`,
-              response
-            );
-
-            statusDiv.textContent = "Search started (backup topics)!";
+            statusDiv.textContent = "Search started (Offline Mode)!";
             statusDiv.style.color = "#ffc107";
-
-            // Re-enable buttons
             searchButton.disabled = false;
             intervalButton.disabled = false;
-          }
-        );
-      }, 2000);
-    });
+        }
+    );
+  });
 }
 
 function stopAll() {
